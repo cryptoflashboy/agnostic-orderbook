@@ -96,8 +96,8 @@ where
     let (leaf_node, _) = slab
         .remove_by_key(params.order_id)
         .ok_or(AoError::OrderNotFound)?;
-    let total_base_qty = leaf_node.base_quantity;
-    let total_quote_qty = fp32_mul_floor(leaf_node.base_quantity, leaf_node.price())
+    let total_base_qty = leaf_node.base_quantity();
+    let total_quote_qty = fp32_mul_floor(leaf_node.base_quantity(), leaf_node.price())
         .ok_or(AoError::NumericalOverflow)?;
 
     let order_summary = OrderSummary {

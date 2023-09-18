@@ -8,7 +8,7 @@ use crate::{
     processor::new_order,
     state::{
         critbit::{LeafNode, NodeHandle, Slab},
-        event_queue::{EventQueue, EventTag, FillEvent, OutEvent},
+        event_queue::{EventQueue, FillEvent, OutEvent},
         AccountTag, SelfTradeBehavior, Side,
     },
 };
@@ -27,11 +27,11 @@ use solana_program::{msg, program_error::ProgramError};
 pub struct OrderSummary {
     /// When applicable, the order id of the newly created order.
     pub posted_order_id: Option<u128>,
-    #[allow(missing_docs)]
+    /// The total base quantity.
     pub total_base_qty: u64,
-    #[allow(missing_docs)]
+    /// The total quote quantity.
     pub total_quote_qty: u64,
-    #[allow(missing_docs)]
+    /// The total base quantity that was posted to the orderbook.
     pub total_base_qty_posted: u64,
 }
 
@@ -120,15 +120,9 @@ where
         let slab = self.get_tree(side);
         for _ in 0..num_orders_to_prune {
             let boot_candidate = slab.find_min().expect("Should be a bid/ask there");
-            let boot_candidate_key = slab.leaf_nodes[boot_candidate as usize].key;
+            let boot_candidate_key = slab.leaf_nodes[boot_candidate as usize].key();
             let (order, callback_info_booted) = slab.remove_by_key(boot_candidate_key).unwrap();
-            let out = OutEvent {
-                side: side as u8,
-                order_id: order.order_id(),
-                base_size: order.base_quantity,
-                tag: EventTag::Out as u8,
-                _padding: [0; 14],
-            };
+            let out = OutEvent::new(side, order.base_quantity(), order.order_id());
             event_queue
                 .push_back(out, Some(callback_info_booted), None)
                 .map_err(|_| AoError::EventQueueFull)?;
@@ -179,16 +173,11 @@ where
 
             // The order on the book has exceeded max ts, we will boot it
             // and continue attempting to match
-            if best_bo_ref.max_ts < cur_ts {
+            if best_bo_ref.max_ts() < cur_ts {
                 let best_offer_id = best_bo_ref.order_id();
                 let provide_out_callback_info = &opposite_slab.callback_infos[best_bo_h as usize];
-                let provide_out = OutEvent {
-                    side: side.opposite() as u8,
-                    order_id: best_offer_id,
-                    base_size: best_bo_ref.base_quantity,
-                    tag: EventTag::Out as u8,
-                    _padding: [0; 14],
-                };
+                let provide_out =
+                    OutEvent::new(side.opposite(), best_bo_ref.base_quantity(), best_offer_id);
                 event_queue
                     .push_back(provide_out, Some(provide_out_callback_info), None)
                     .map_err(|_| AoError::EventQueueFull)?;
@@ -212,7 +201,7 @@ where
                 break;
             }
 
-            let offer_size = best_bo_ref.base_quantity;
+            let offer_size = best_bo_ref.base_quantity();
             let base_trade_qty = offer_size
                 .min(base_qty_remaining)
                 .min(fp32_div(quote_qty_remaining, best_bo_ref.price()).unwrap_or(u64::MAX));
@@ -246,13 +235,8 @@ where
                     assert!(self_trade_behavior == SelfTradeBehavior::CancelProvide);
                     let provide_out_callback_info =
                         &opposite_slab.callback_infos[best_bo_h as usize];
-                    let provide_out = OutEvent {
-                        side: side.opposite() as u8,
-                        order_id: best_offer_id,
-                        base_size: best_bo_ref.base_quantity,
-                        tag: EventTag::Out as u8,
-                        _padding: [0; 14],
-                    };
+                    let provide_out =
+                        OutEvent::new(side.opposite(), best_bo_ref.base_quantity(), best_offer_id);
                     event_queue
                         .push_back(provide_out, Some(provide_out_callback_info), None)
                         .map_err(|_| AoError::EventQueueFull)?;
@@ -269,32 +253,24 @@ where
 
             let maker_callback_info = &opposite_slab.callback_infos[best_bo_h as usize];
 
-            let maker_fill = FillEvent {
-                taker_side: side as u8,
-                maker_order_id: best_bo_ref.order_id(),
-                quote_size: quote_maker_qty,
-                base_size: base_trade_qty,
-                tag: EventTag::Fill as u8,
-                _padding: [0; 6],
-            };
+            let maker_fill = FillEvent::new(
+                side,
+                quote_maker_qty,
+                best_bo_ref.order_id(),
+                base_trade_qty,
+            );
             event_queue
                 .push_back(maker_fill, Some(maker_callback_info), Some(&callback_info))
                 .map_err(|_| AoError::EventQueueFull)?;
 
-            best_bo_ref.base_quantity -= base_trade_qty;
+            best_bo_ref.set_base_quantity(best_bo_ref.base_quantity() - base_trade_qty);
             base_qty_remaining -= base_trade_qty;
             quote_qty_remaining -= quote_maker_qty;
 
-            if best_bo_ref.base_quantity < min_base_order_size {
+            if best_bo_ref.base_quantity() < min_base_order_size {
                 let best_offer_id = best_bo_ref.order_id();
                 let cur_side = side.opposite();
-                let out_event = OutEvent {
-                    side: cur_side as u8,
-                    order_id: best_offer_id,
-                    base_size: best_bo_ref.base_quantity,
-                    tag: EventTag::Out as u8,
-                    _padding: [0; 14],
-                };
+                let out_event = OutEvent::new(cur_side, best_bo_ref.base_quantity(), best_offer_id);
 
                 let (_, out_event_callback_info) = self
                     .get_tree(cur_side)
@@ -323,11 +299,7 @@ where
         }
 
         let new_leaf_order_id = event_queue.gen_order_id(limit_price, side);
-        let new_leaf = LeafNode {
-            key: new_leaf_order_id,
-            base_quantity: base_qty_to_post,
-            max_ts,
-        };
+        let new_leaf = LeafNode::new(new_leaf_order_id, base_qty_to_post, max_ts);
         let insert_result = self.get_tree(side).insert_leaf(&new_leaf);
         let k = if let Err(AoError::SlabOutOfSpace) = insert_result {
             // Boot out the least aggressive orders
@@ -337,7 +309,7 @@ where
                 Side::Bid => slab.find_min().unwrap(),
                 Side::Ask => slab.find_max().unwrap(),
             };
-            let boot_candidate_key = slab.leaf_nodes[boot_candidate as usize].key;
+            let boot_candidate_key = slab.leaf_nodes[boot_candidate as usize].key();
             let boot_candidate_price = LeafNode::price_from_key(boot_candidate_key);
             let should_boot = match side {
                 Side::Bid => boot_candidate_price < limit_price,
@@ -345,13 +317,7 @@ where
             };
             if should_boot {
                 let (order, callback_info_booted) = slab.remove_by_key(boot_candidate_key).unwrap();
-                let out = OutEvent {
-                    side: side as u8,
-                    order_id: order.order_id(),
-                    base_size: order.base_quantity,
-                    tag: EventTag::Out as u8,
-                    _padding: [0; 14],
-                };
+                let out = OutEvent::new(side, order.base_quantity(), order.order_id());
                 event_queue
                     .push_back(out, Some(callback_info_booted), None)
                     .map_err(|_| AoError::EventQueueFull)?;
@@ -581,14 +547,7 @@ mod tests {
         assert_eq!(
             event_queue_iter.next().unwrap(),
             EventRef::Fill(FillEventRef {
-                event: &FillEvent {
-                    tag: EventTag::Fill as u8,
-                    taker_side: Side::Ask as u8,
-                    _padding: [0; 6],
-                    quote_size: 500_000 * 15,
-                    maker_order_id: bob_order_id_0.unwrap(),
-                    base_size: 500_000
-                },
+                event: &FillEvent::new(Side::Ask, 500_000 * 15, bob_order_id_0.unwrap(), 500_000),
                 maker_callback_info: &bob,
                 taker_callback_info: &alice
             })
@@ -597,13 +556,7 @@ mod tests {
         assert_eq!(
             event_queue_iter.next().unwrap(),
             EventRef::Out(OutEventRef {
-                event: &OutEvent {
-                    tag: EventTag::Out as u8,
-                    side: Side::Bid as u8,
-                    _padding: [0; 14],
-                    base_size: 0,
-                    order_id: bob_order_id_0.unwrap()
-                },
+                event: &OutEvent::new(Side::Bid, 0, bob_order_id_0.unwrap(),),
                 callback_info: &bob
             })
         );
@@ -674,13 +627,7 @@ mod tests {
         assert_eq!(
             event_queue.iter().next().unwrap(),
             EventRef::Out(OutEventRef {
-                event: &OutEvent {
-                    tag: EventTag::Out as u8,
-                    side: Side::Ask as u8,
-                    _padding: [0; 14],
-                    base_size: 250_000,
-                    order_id: alice_order_id_0.unwrap()
-                },
+                event: &OutEvent::new(Side::Ask, 250_000, alice_order_id_0.unwrap() as u128,),
                 callback_info: &alice
             })
         );
@@ -779,6 +726,11 @@ mod tests {
         assert_eq!(total_base_qty_posted, 6_000_000);
         assert_eq!(event_queue.header.count, 0);
 
+        let asks = orderbook.get_tree(Side::Ask);
+        asks.dump();
+        let bids = orderbook.get_tree(Side::Bid);
+        bids.dump();
+
         // Alice posts an ask order for 1 BTC at 10 USD/BTC
         let OrderSummary {
             posted_order_id,
@@ -813,13 +765,7 @@ mod tests {
         assert_eq!(
             event_queue.iter().next().unwrap(),
             EventRef::Out(OutEventRef {
-                event: &OutEvent {
-                    tag: EventTag::Out as u8,
-                    side: Side::Ask as u8,
-                    _padding: [0; 14],
-                    base_size: 6_000_000,
-                    order_id: order_id_to_be_booted.unwrap()
-                },
+                event: &OutEvent::new(Side::Ask, 6_000_000, order_id_to_be_booted.unwrap() as u128,),
                 callback_info: &alice
             })
         );
@@ -1022,13 +968,7 @@ mod tests {
         assert_eq!(
             event_queue.iter().next().unwrap(),
             EventRef::Out(OutEventRef {
-                event: &OutEvent {
-                    tag: EventTag::Out as u8,
-                    side: Side::Bid as u8,
-                    _padding: [0; 14],
-                    base_size: 6_000_000,
-                    order_id: order_id_to_be_booted.unwrap()
-                },
+                event: &OutEvent::new(Side::Bid, 6_000_000, order_id_to_be_booted.unwrap() as u128,),
                 callback_info: &alice
             })
         );

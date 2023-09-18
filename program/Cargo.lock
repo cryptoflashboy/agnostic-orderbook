@@ -56,7 +56,11 @@ dependencies = [
 
 [[package]]
 name = "agnostic-orderbook"
+<<<<<<< HEAD
 version = "2.0.0"
+=======
+version = "1.0.2"
+>>>>>>> performance_improvements
 dependencies = [
  "arrayref",
  "bonfida-utils",

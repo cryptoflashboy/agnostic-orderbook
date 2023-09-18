@@ -11,6 +11,7 @@ pub use crate::processor::{
     cancel_order, close_market, consume_events, create_market, mass_cancel_orders, new_order,
     prune_orders,
 };
+
 #[derive(BorshDeserialize, BorshSerialize, FromPrimitive)]
 /// Describes all possible instructions and their required accounts
 pub enum AgnosticOrderbookInstruction {

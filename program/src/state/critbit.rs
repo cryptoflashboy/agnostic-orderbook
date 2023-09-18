@@ -1,11 +1,11 @@
 #![allow(missing_docs)]
+use super::{ACCOUNT_TAG_INDEX, ACCOUNT_TAG_LENGTH};
 use crate::error::AoError;
 use crate::state::AccountTag;
 use borsh::{BorshDeserialize, BorshSerialize};
 use bytemuck::{Pod, Zeroable};
 use solana_program::{msg, program_error::ProgramError};
-// A Slab contains the data for a slab header and two type-split arrays of inner nodes and leaves arranger in a critbit tree
-// whose leaves contain data referencing an order of the orderbook.
+use std::convert::{TryFrom, TryInto};
 
 #[doc(hidden)]
 pub type IoError = std::io::Error;
@@ -29,37 +29,106 @@ impl SlabHeader {
     pub const LEN: usize = std::mem::size_of::<Self>();
 }
 
+// A Slab contains the data for a slab header and two type-split arrays of inner nodes and leaves arranged in a critbit tree
+// whose leaves contain data referencing an order of the orderbook.
 pub struct Slab<'a, C> {
     pub header: &'a mut SlabHeader,
     pub leaf_nodes: &'a mut [LeafNode],
     pub inner_nodes: &'a mut [InnerNode],
     pub callback_infos: &'a mut [C],
 }
-#[derive(Zeroable, Clone, Copy, Pod, Debug, PartialEq)]
-#[repr(C)]
-pub struct LeafNode {
-    /// The key is the associated order id
-    pub key: u128,
-    /// The quantity of base asset associated with the underlying order
-    pub base_quantity: u64,
-    /// The maximum timestamp at which this order is able to be matched against
-    pub max_ts: u64,
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[repr(transparent)]
+/// Represents a leaf node in the critbit tree.
+///
+/// The actual inner data of the structure has the following fields.
+///
+/// ```ignore
+///    /// The key is the associated order id.
+///    pub key: u128,
+///    /// The quantity of base asset associated with the underlying order.
+///    pub base_quantity: u64,
+///    /// The maximum timestamp at which this order is able to be matched against.
+///    pub max_ts: u64,
+/// ```
+pub struct LeafNode([u8; 32]);
+
+impl Default for LeafNode {
+    fn default() -> Self {
+        Self([0; 32])
+    }
 }
+
+unsafe impl Pod for LeafNode {}
+unsafe impl Zeroable for LeafNode {}
 
 impl LeafNode {
     pub const LEN: usize = std::mem::size_of::<Self>();
+    const KEY_INDEX: usize = 0;
+    const BASE_QUANTITY_INDEX: usize = 16;
+    const MAX_TS_INDEX: usize = 24;
 
-    /// Parse a leaf node's price
+    pub(crate) fn new(key: u128, base_quantity: u64, max_ts: u64) -> Self {
+        let mut leaf = Self::default();
+        leaf.set_key(key);
+        leaf.set_base_quantity(base_quantity);
+        leaf.set_max_ts(max_ts);
+        leaf
+    }
+
+    /// The node's key, which is also the associated order id.
+    pub(crate) fn key(&self) -> u128 {
+        u128::from_le_bytes(
+            self.0[Self::KEY_INDEX..Self::BASE_QUANTITY_INDEX]
+                .try_into()
+                .unwrap(),
+        )
+    }
+
+    /// The quantity of base asset associated with the underlying order.
+    pub(crate) fn base_quantity(&self) -> u64 {
+        u64::from_le_bytes(
+            self.0[Self::BASE_QUANTITY_INDEX..Self::MAX_TS_INDEX]
+                .try_into()
+                .unwrap(),
+        )
+    }
+
+    /// The maximum timestamp at which this order is able to be matched against.
+    pub(crate) fn max_ts(&self) -> u64 {
+        u64::from_le_bytes(self.0[Self::MAX_TS_INDEX..Self::LEN].try_into().unwrap())
+    }
+
+    /// Sets the node's key.
+    pub(crate) fn set_key(&mut self, value: u128) {
+        let dst = &mut self.0[Self::KEY_INDEX..Self::BASE_QUANTITY_INDEX];
+        dst.copy_from_slice(&value.to_le_bytes()[..]);
+    }
+
+    /// Sets the base quantity of the associated order.
+    pub(crate) fn set_base_quantity(&mut self, value: u64) {
+        let dst = &mut self.0[Self::BASE_QUANTITY_INDEX..Self::MAX_TS_INDEX];
+        dst.copy_from_slice(&value.to_le_bytes()[..]);
+    }
+
+    /// Sets the maximum timestamp of the associated order.
+    pub(crate) fn set_max_ts(&mut self, value: u64) {
+        let dst = &mut self.0[Self::MAX_TS_INDEX..Self::LEN];
+        dst.copy_from_slice(&value.to_le_bytes()[..]);
+    }
+
+    /// Parse a leaf node's price.
     pub fn price(&self) -> u64 {
-        Self::price_from_key(self.key)
+        Self::price_from_key(self.key())
     }
 
-    /// Get the associated order id
+    /// Get the associated order id.
     pub fn order_id(&self) -> u128 {
-        self.key
+        self.key()
     }
 
-    /// Deduce an associated price from an order_id
+    /// Deduce an associated price from an order_id.
     pub(crate) fn price_from_key(key: u128) -> u64 {
         (key >> 64) as u64
     }
@@ -68,21 +137,94 @@ impl LeafNode {
 pub type NodeHandle = u32;
 
 pub const INNER_FLAG: u32 = 1 << 31;
-#[derive(Zeroable, Clone, Copy, Pod, Debug)]
-#[repr(C)]
-pub struct InnerNode {
-    key: u128,
-    prefix_len: u64,
-    pub children: [u32; 2],
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[repr(transparent)]
+/// Represents an inner node in the critbit tree.
+///
+/// The actual inner data of the structure has the following fields.
+///
+/// ```ignore
+/// /// The order id.
+///    key: u128,
+///    prefix_len: u64,
+///    pub children: [u32; 2],
+/// ```
+pub struct InnerNode([u8; 32]);
+
+impl Default for InnerNode {
+    fn default() -> Self {
+        Self([0; 32])
+    }
 }
+
+unsafe impl Pod for InnerNode {}
+unsafe impl Zeroable for InnerNode {}
 
 impl InnerNode {
     pub const LEN: usize = std::mem::size_of::<Self>();
+    const KEY_INDEX: usize = 0;
+    const PREFIX_LEN_INDEX: usize = 16;
+    const LEFT_CHILDREN_INDEX: usize = 24;
+    const RIGHT_CHILDREN_INDEX: usize = 28;
+
+    /// Gets prefix length
+    pub fn key(&self) -> u128 {
+        u128::from_le_bytes(
+            self.0[Self::KEY_INDEX..Self::PREFIX_LEN_INDEX]
+                .try_into()
+                .unwrap(),
+        )
+    }
+
+    /// Gets prefix length
+    pub fn prefix_len(&self) -> u64 {
+        u64::from_le_bytes(
+            self.0[Self::PREFIX_LEN_INDEX..Self::LEFT_CHILDREN_INDEX]
+                .try_into()
+                .unwrap(),
+        )
+    }
+
+    /// Gets the children nodes.
+    pub fn children(&self) -> [u32; 2] {
+        let mut children = [0; 2];
+        children[0] = u32::from_le_bytes(
+            self.0[Self::LEFT_CHILDREN_INDEX..Self::RIGHT_CHILDREN_INDEX]
+                .try_into()
+                .unwrap(),
+        );
+        children[1] = u32::from_le_bytes(
+            self.0[Self::RIGHT_CHILDREN_INDEX..Self::LEN]
+                .try_into()
+                .unwrap(),
+        );
+        children
+    }
+
+    /// Sets the node's key.
+    pub fn set_key(&mut self, value: u128) {
+        let dst = &mut self.0[Self::KEY_INDEX..Self::PREFIX_LEN_INDEX];
+        dst.copy_from_slice(&value.to_le_bytes()[..]);
+    }
+
+    /// Sets the prefix length.
+    pub fn set_prefix_len(&mut self, value: u64) {
+        let dst = &mut self.0[Self::PREFIX_LEN_INDEX..Self::LEFT_CHILDREN_INDEX];
+        dst.copy_from_slice(&value.to_le_bytes()[..]);
+    }
+
+    /// Sets a children node.
+    pub fn set_children(&mut self, index: usize, value: u32) {
+        let from_index = Self::LEFT_CHILDREN_INDEX + index * std::mem::size_of::<u32>();
+        let to_index = Self::RIGHT_CHILDREN_INDEX + index * std::mem::size_of::<u32>();
+        let dst = &mut self.0[from_index..to_index];
+        dst.copy_from_slice(&value.to_le_bytes()[..]);
+    }
 
     pub(crate) fn walk_down(&self, search_key: u128) -> (NodeHandle, bool) {
-        let crit_bit_mask = (1u128 << 127) >> self.prefix_len;
+        let crit_bit_mask = (1u128 << 127) >> self.prefix_len();
         let crit_bit = (search_key & crit_bit_mask) != 0;
-        (self.children[crit_bit as usize], crit_bit)
+        (self.children()[crit_bit as usize], crit_bit)
     }
 }
 
@@ -103,18 +245,19 @@ impl Node {
 
 impl<'slab, C> Slab<'slab, C> {
     pub fn initialize(asks_data: &mut [u8], bids_data: &mut [u8]) -> Result<(), ProgramError> {
-        if asks_data[0] != AccountTag::Uninitialized as u8
-            || bids_data[0] != AccountTag::Uninitialized as u8
+        if asks_data[ACCOUNT_TAG_INDEX] != AccountTag::Uninitialized as u8
+            || bids_data[ACCOUNT_TAG_INDEX] != AccountTag::Uninitialized as u8
         {
             return Err(ProgramError::AccountAlreadyInitialized);
         }
-        asks_data[0] = AccountTag::Asks as u8;
-        bids_data[0] = AccountTag::Bids as u8;
+        asks_data[ACCOUNT_TAG_INDEX] = AccountTag::Asks as u8;
+        bids_data[ACCOUNT_TAG_INDEX] = AccountTag::Bids as u8;
         Ok(())
     }
 
     pub fn compute_allocation_size(desired_order_capacity: usize) -> usize {
-        8 + SlabHeader::LEN
+        ACCOUNT_TAG_LENGTH
+            + SlabHeader::LEN
             + LeafNode::LEN
             + std::mem::size_of::<C>()
             + (desired_order_capacity.checked_sub(1).unwrap())
@@ -123,17 +266,27 @@ impl<'slab, C> Slab<'slab, C> {
 }
 
 impl<'a, C: Pod> Slab<'a, C> {
-    pub fn from_buffer(buf: &'a mut [u8], expected_tag: AccountTag) -> Result<Self, ProgramError> {
+    pub fn from_buffer(
+        buffer: &'a mut [u8],
+        expected_tag: AccountTag,
+    ) -> Result<Self, ProgramError> {
+        match AccountTag::try_from(&buffer[ACCOUNT_TAG_INDEX..ACCOUNT_TAG_LENGTH]) {
+            Ok(a) => {
+                if a != expected_tag {
+                    msg!("Invalid account tag for slab!");
+                    return Err(ProgramError::InvalidAccountData);
+                }
+            }
+            Err(e) => {
+                return Err(e);
+            }
+        };
         let callback_info_len = std::mem::size_of::<C>();
         let leaf_size = LeafNode::LEN + callback_info_len;
-        let capacity = (buf.len() - SlabHeader::LEN - 8 - leaf_size) / (leaf_size + InnerNode::LEN);
+        let capacity = (buffer.len() - SlabHeader::LEN - ACCOUNT_TAG_LENGTH - leaf_size)
+            / (leaf_size + InnerNode::LEN);
 
-        if buf[0] != expected_tag as u8 {
-            msg!("Invalid account tag for slab!");
-            return Err(ProgramError::InvalidAccountData);
-        }
-        let (_, rem) = buf.split_at_mut(8);
-        let (header, rem) = rem.split_at_mut(SlabHeader::LEN);
+        let (header, rem) = buffer[ACCOUNT_TAG_LENGTH..].split_at_mut(SlabHeader::LEN);
         let (leaves, rem) = rem.split_at_mut((capacity + 1) * LeafNode::LEN);
         let (inner_nodes, callback_infos) = rem.split_at_mut(capacity * InnerNode::LEN);
         let header = bytemuck::from_bytes_mut::<SlabHeader>(header);
@@ -167,7 +320,7 @@ impl<'a, C> Slab<'a, C> {
 
         let key = self.header.leaf_free_list_head;
         let free_leaf = &mut self.leaf_nodes[key as usize];
-        let next = free_leaf.base_quantity as u32;
+        let next = free_leaf.base_quantity() as u32;
         self.header.leaf_free_list_head = next;
         self.header.leaf_free_list_len -= 1;
 
@@ -177,7 +330,7 @@ impl<'a, C> Slab<'a, C> {
     pub(crate) fn free_leaf(&mut self, handle: NodeHandle) {
         if self.header.leaf_free_list_len != 0 {
             let next = self.header.leaf_free_list_head;
-            self.leaf_nodes[handle as usize].base_quantity = next as u64;
+            self.leaf_nodes[handle as usize].set_base_quantity(next as u64);
         }
 
         self.header.leaf_free_list_len += 1;
@@ -196,7 +349,7 @@ impl<'a, C> Slab<'a, C> {
 
         let key = self.header.inner_node_free_list_head;
         let free_inner_node = &mut self.inner_nodes[key as usize];
-        let next = free_inner_node.prefix_len as u32;
+        let next = free_inner_node.prefix_len() as u32;
         self.header.inner_node_free_list_head = next;
         self.header.inner_node_free_list_len -= 1;
 
@@ -206,7 +359,7 @@ impl<'a, C> Slab<'a, C> {
     pub(crate) fn free_inner_node(&mut self, handle: NodeHandle) {
         if self.header.inner_node_free_list_len != 0 {
             let next = self.header.inner_node_free_list_head;
-            self.inner_nodes[(!handle) as usize].prefix_len = next as u64;
+            self.inner_nodes[(!handle) as usize].set_prefix_len(next as u64);
         }
 
         self.header.inner_node_free_list_len += 1;
@@ -233,11 +386,11 @@ impl<'a, C> Slab<'a, C> {
             let shared_prefix_len = match Node::from_handle(root) {
                 Node::Inner => {
                     let root_node = &self.inner_nodes[(!root) as usize];
-                    let shared_prefix_len: u32 = (root_node.key ^ new_leaf.key).leading_zeros();
-                    let keep_old_root = shared_prefix_len >= root_node.prefix_len as u32;
+                    let shared_prefix_len: u32 = (root_node.key() ^ new_leaf.key()).leading_zeros();
+                    let keep_old_root = shared_prefix_len >= root_node.prefix_len() as u32;
                     if keep_old_root {
                         parent_node = Some(root);
-                        let r = root_node.walk_down(new_leaf.key);
+                        let r = root_node.walk_down(new_leaf.key());
                         root = r.0;
                         previous_critbit = Some(r.1);
                         continue;
@@ -247,13 +400,13 @@ impl<'a, C> Slab<'a, C> {
                 }
                 Node::Leaf => {
                     let root_node = &mut self.leaf_nodes[root as usize];
-                    if root_node.key == new_leaf.key {
+                    if root_node.key() == new_leaf.key() {
                         // clobber the existing leaf
                         let leaf_copy = *root_node;
                         *root_node = *new_leaf;
                         return Ok((root, Some(leaf_copy)));
                     }
-                    let shared_prefix_len: u32 = (root_node.key ^ new_leaf.key).leading_zeros();
+                    let shared_prefix_len: u32 = (root_node.key() ^ new_leaf.key()).leading_zeros();
 
                     shared_prefix_len
                 }
@@ -261,7 +414,7 @@ impl<'a, C> Slab<'a, C> {
 
             // change the root in place to represent the LCA of [new_leaf] and [root]
             let crit_bit_mask: u128 = (1u128 << 127) >> shared_prefix_len;
-            let new_leaf_crit_bit = (crit_bit_mask & new_leaf.key) != 0;
+            let new_leaf_crit_bit = (crit_bit_mask & new_leaf.key()) != 0;
             let old_root_crit_bit = !new_leaf_crit_bit;
 
             let new_leaf_handle = self.allocate_leaf().map_err(|_| AoError::SlabOutOfSpace)?;
@@ -269,14 +422,14 @@ impl<'a, C> Slab<'a, C> {
 
             let new_root_node_handle = self.allocate_inner_node().unwrap();
             let new_root_node = &mut self.inner_nodes[(!new_root_node_handle) as usize];
-            new_root_node.prefix_len = shared_prefix_len as u64;
-            new_root_node.key = new_leaf.key;
-            new_root_node.children[new_leaf_crit_bit as usize] = new_leaf_handle;
-            new_root_node.children[old_root_crit_bit as usize] = root;
+            new_root_node.set_prefix_len(shared_prefix_len as u64);
+            new_root_node.set_key(new_leaf.key());
+            new_root_node.set_children(new_leaf_crit_bit as usize, new_leaf_handle);
+            new_root_node.set_children(old_root_crit_bit as usize, root);
 
             if let Some(n) = parent_node {
                 let node = &mut self.inner_nodes[(!n) as usize];
-                node.children[previous_critbit.unwrap() as usize] = new_root_node_handle;
+                node.set_children(previous_critbit.unwrap() as usize, new_root_node_handle);
             } else {
                 self.header.root_node = new_root_node_handle;
             }
@@ -311,7 +464,7 @@ impl<'a, C> Slab<'a, C> {
             match Node::from_handle(parent_h) {
                 Node::Leaf => {
                     let leaf = &self.leaf_nodes[parent_h as usize];
-                    if leaf.key == search_key {
+                    if leaf.key() == search_key {
                         remove_root = Some(*leaf);
                     }
                 }
@@ -345,7 +498,7 @@ impl<'a, C> Slab<'a, C> {
                 }
                 Node::Leaf => {
                     let leaf = &self.leaf_nodes[child_h as usize];
-                    if leaf.key != search_key {
+                    if leaf.key() != search_key {
                         return None;
                     }
 
@@ -356,12 +509,12 @@ impl<'a, C> Slab<'a, C> {
 
         // replace parent with its remaining child node
         // free child_h, replace *parent_h with *other_child_h, free other_child_h
-        let other_child_h = self.inner_nodes[(!parent_h) as usize].children[!crit_bit as usize];
+        let other_child_h = self.inner_nodes[(!parent_h) as usize].children()[!crit_bit as usize];
 
         match grandparent_h {
             Some(h) => {
                 let r = &mut self.inner_nodes[(!h) as usize];
-                r.children[prev_crit_bit.unwrap() as usize] = other_child_h;
+                r.set_children(prev_crit_bit.unwrap() as usize, other_child_h);
             }
             None => self.header.root_node = other_child_h,
         }
@@ -382,7 +535,7 @@ impl<'a, C> Slab<'a, C> {
                 Node::Leaf => return Some(root),
                 Node::Inner => {
                     let node = self.inner_nodes[(!root) as usize];
-                    root = node.children[if find_max { 1 } else { 0 }];
+                    root = node.children()[if find_max { 1 } else { 0 }];
                 }
             }
         }
@@ -433,7 +586,7 @@ impl<'a, C> Slab<'a, C> {
     }
 
     #[cfg(test)]
-    fn dump(&self) {
+    pub(crate) fn dump(&self) {
         // println!("Callback info length {:?}", self.callback_info_len);
         println!("Header (parsed):");
         let mut header_data = Vec::new();
@@ -470,38 +623,39 @@ impl<'a, C> Slab<'a, C> {
                     let node = &slab.leaf_nodes[h as usize];
                     assert_eq!(
                         last_critbit,
-                        (node.key & ((1u128 << 127) >> last_prefix_len)) != 0
+                        (node.key() & ((1u128 << 127) >> last_prefix_len)) != 0
                     );
                     let prefix_mask =
                         (((((1u128) << 127) as i128) >> last_prefix_len) as u128) << 1;
-                    assert_eq!(last_prefix & prefix_mask, node.key & prefix_mask);
+                    assert_eq!(last_prefix & prefix_mask, node.key() & prefix_mask);
                 }
                 Node::Inner => {
                     *inner_node_count += 1;
                     let node = &slab.inner_nodes[(!h) as usize];
 
-                    assert!(node.prefix_len > last_prefix_len);
+                    assert!(node.prefix_len() > last_prefix_len);
                     assert_eq!(
                         last_critbit,
-                        (node.key & ((1u128 << 127) >> last_prefix_len)) != 0
+                        (node.key() & ((1u128 << 127) >> last_prefix_len)) != 0
                     );
                     let prefix_mask =
                         (((((1u128) << 127) as i128) >> last_prefix_len) as u128) << 1;
-                    assert_eq!(last_prefix & prefix_mask, node.key & prefix_mask);
+                    assert_eq!(last_prefix & prefix_mask, node.key() & prefix_mask);
+                    let children = node.children();
                     check_rec(
                         slab,
-                        node.children[0],
-                        node.prefix_len,
-                        node.key,
+                        children[0],
+                        node.prefix_len(),
+                        node.key(),
                         false,
                         leaf_count,
                         inner_node_count,
                     );
                     check_rec(
                         slab,
-                        node.children[1],
-                        node.prefix_len,
-                        node.key,
+                        children[1],
+                        node.prefix_len(),
+                        node.key(),
                         true,
                         leaf_count,
                         inner_node_count,
@@ -513,20 +667,21 @@ impl<'a, C> Slab<'a, C> {
             if matches!(Node::from_handle(root), Node::Inner) {
                 inner_node_count += 1;
                 let n = &self.inner_nodes[(!root) as usize];
+                let children = n.children();
                 check_rec(
                     self,
-                    n.children[0],
-                    n.prefix_len,
-                    n.key,
+                    children[0],
+                    n.prefix_len(),
+                    n.key(),
                     false,
                     &mut leaf_count,
                     &mut inner_node_count,
                 );
                 check_rec(
                     self,
-                    n.children[1],
-                    n.prefix_len,
-                    n.key,
+                    children[1],
+                    n.prefix_len(),
+                    n.key(),
                     true,
                     &mut leaf_count,
                     &mut inner_node_count,
@@ -556,7 +711,7 @@ impl<'a, C> Slab<'a, C> {
             match Node::from_handle(node_handle) {
                 Node::Leaf => {
                     let n = self.leaf_nodes[node_handle as usize];
-                    if search_key == n.key {
+                    if search_key == n.key() {
                         return Some(node_handle);
                     } else {
                         return None;
@@ -564,8 +719,8 @@ impl<'a, C> Slab<'a, C> {
                 }
                 Node::Inner => {
                     let n = self.inner_nodes[!node_handle as usize];
-                    let common_prefix_len = (search_key ^ n.key).leading_zeros();
-                    if common_prefix_len < n.prefix_len as u32 {
+                    let common_prefix_len = (search_key ^ n.key()).leading_zeros();
+                    if common_prefix_len < n.prefix_len() as u32 {
                         return None;
                     }
                     node_handle = n.walk_down(search_key).0;
@@ -590,8 +745,9 @@ impl<'queue, C: Clone> Slab<'queue, C> {
                 }
                 Node::Inner => {
                     let n = slab.inner_nodes[(!sub_root) as usize];
-                    walk_rec::<C>(slab, n.children[0], buf);
-                    walk_rec::<C>(slab, n.children[1], buf);
+                    let children = n.children();
+                    walk_rec::<C>(slab, children[0], buf);
+                    walk_rec::<C>(slab, children[1], buf);
                 }
             }
         }
@@ -622,8 +778,9 @@ impl<'a, C: Pod> Iterator for SlabIterator<'a, C> {
             match Node::from_handle(current) {
                 Node::Inner => {
                     let n = &self.slab.inner_nodes[(!current) as usize];
-                    self.search_stack.push(n.children[self.ascending as usize]);
-                    self.search_stack.push(n.children[!self.ascending as usize]);
+                    let children = n.children();
+                    self.search_stack.push(children[self.ascending as usize]);
+                    self.search_stack.push(children[!self.ascending as usize]);
                 }
                 Node::Leaf => return Some(self.slab.leaf_nodes[current as usize]),
             }
@@ -637,28 +794,10 @@ impl<'a, C: Pod> Iterator for SlabIterator<'a, C> {
 
 #[cfg(test)]
 mod tests {
-
-    use crate::state::orderbook::CallbackInfo;
-
     use super::*;
+    use crate::state::orderbook::CallbackInfo;
     use rand::prelude::*;
     use solana_program::pubkey::Pubkey;
-
-    // #[test]
-    // fn test_node_serialization() {
-    //     let mut rng = StdRng::seed_from_u64(42);
-    //     let mut bytes = [0u8; 100];
-    //     let mut w: &mut [u8] = &mut bytes;
-    //     let l = LeafNode::new(rng.gen(), rng.gen::<[u8; 32]>().to_vec(), rng.gen());
-    //     l.serialize(&mut w).unwrap();
-    //     let new_leaf = LeafNode::deserialize(&bytes, 32).unwrap();
-    //     assert_eq!(l, new_leaf);
-    //     let node = NodeTag::Leaf(l);
-    //     w = &mut bytes;
-    //     node.serialize(&mut &mut w).unwrap();
-    //     let new_node = NodeTag::deserialize(&bytes, 32).unwrap();
-    //     assert_eq!(node, new_node);
-    // }
 
     #[test]
     fn simulate_find_min() {
@@ -696,11 +835,7 @@ mod tests {
                 let key = rng.gen();
                 let owner = Pubkey::new_unique();
                 let qty = rng.gen();
-                let leaf = LeafNode {
-                    key,
-                    base_quantity: qty,
-                    max_ts: u64::MAX,
-                };
+                let leaf = LeafNode::new(key, qty, u64::MAX);
 
                 println!("key : {:x}", key);
                 println!("owner : {:?}", &owner.to_bytes());
@@ -808,11 +943,8 @@ mod tests {
                         };
                         let owner = Pubkey::new_unique().to_bytes();
                         let qty = rng.gen();
-                        let leaf = LeafNode {
-                            key,
-                            base_quantity: qty,
-                            max_ts: u64::MAX,
-                        };
+
+                        let leaf = LeafNode::new(key, qty, u64::MAX);
                         let (leaf_h, old_leaf) = slab.insert_leaf(&leaf).unwrap();
                         let old_owner = *slab.get_callback_info(leaf_h);
                         *slab.get_callback_info_mut(leaf_h) = owner;

@@ -56,6 +56,10 @@ pub enum AoError {
     NumericalOverflow,
     #[error("Invalid callback info")]
     InvalidCallbackInfo,
+    #[error("Invalid event tag")]
+    InvalidEventTag, // 25
+    #[error("Invalid order side")]
+    InvalidOrderSide, // 25
 }
 
 impl From<AoError> for ProgramError {

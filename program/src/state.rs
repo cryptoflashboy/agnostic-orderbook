@@ -2,6 +2,8 @@ use bonfida_utils::BorshSize;
 use borsh::{BorshDeserialize, BorshSerialize};
 use bytemuck::{CheckedBitPattern, NoUninit};
 use num_derive::{FromPrimitive, ToPrimitive};
+use solana_program::program_error::ProgramError;
+use std::convert::TryFrom;
 
 pub use crate::state::orderbook::{OrderSummary, ORDER_SUMMARY_SIZE};
 #[cfg(feature = "no-entrypoint")]
@@ -13,7 +15,13 @@ pub mod event_queue;
 pub mod market_state;
 pub mod orderbook;
 
-#[derive(Copy, Clone, Debug, PartialEq)]
+/// The index of the [`AccountTag`] in the account buffers.
+pub const ACCOUNT_TAG_INDEX: usize = 0;
+
+/// The length of the [`AccountTag`] in the account buffers.
+pub const ACCOUNT_TAG_LENGTH: usize = 8;
+
+#[derive(Clone, Copy, PartialEq, Debug)]
 #[allow(missing_docs)]
 #[repr(u8)]
 /// Warning: the account tags are bitshifted to allow for standard tag usage in the program using the aob.
@@ -24,6 +32,30 @@ pub enum AccountTag {
     Bids,
     Asks,
     Disabled,
+}
+
+impl Default for AccountTag {
+    fn default() -> Self {
+        Self::Uninitialized
+    }
+}
+
+impl TryFrom<&[u8]> for AccountTag {
+    type Error = ProgramError;
+
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        match bytemuck::from_bytes::<u64>(value) {
+            0 => Ok(Self::Uninitialized),
+            128 => Ok(Self::Market),
+            129 => Ok(Self::EventQueue),
+            130 => Ok(Self::Bids),
+            131 => Ok(Self::Asks),
+            132 => Ok(Self::Disabled),
+            _ => {
+                return Err(ProgramError::InvalidAccountData);
+            }
+        }
+    }
 }
 
 #[derive(
