@@ -4,14 +4,6 @@ use solana_program::{account_info::AccountInfo, pubkey::Pubkey};
 
 use crate::state::orderbook::{CallbackInfo, OrderBookState};
 
-#[cfg(not(debug_assertions))]
-#[inline(always)]
-unsafe fn invariant(check: bool) {
-    if check {
-        std::hint::unreachable_unchecked();
-    }
-}
-
 // Safety verification functions
 pub(crate) fn check_account_key(
     account: &AccountInfo,
