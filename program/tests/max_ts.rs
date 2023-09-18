@@ -192,7 +192,7 @@ async fn test_agnostic_orderbook() {
     sign_send_instructions(&mut prg_test_ctx, vec![new_order_instruction], vec![])
         .await
         .unwrap();
-    
+
     // New Order
     let new_order_instruction = new_order(
         new_order::Accounts {
@@ -344,7 +344,6 @@ async fn test_agnostic_orderbook() {
         .await
         .unwrap();
 }
-
 
 pub async fn advance_clock_by_secs(prg_test_ctx: &mut ProgramTestContext, secs: u64) {
     let mut clock: Clock = prg_test_ctx.banks_client.get_sysvar().await.unwrap();

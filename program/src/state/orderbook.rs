@@ -175,7 +175,7 @@ where
 
             let opposite_slab = self.get_tree(side.opposite());
 
-            let mut best_bo_ref = &mut opposite_slab.leaf_nodes[best_bo_h as usize];
+            let best_bo_ref = &mut opposite_slab.leaf_nodes[best_bo_h as usize];
 
             // The order on the book has exceeded max ts, we will boot it
             // and continue attempting to match

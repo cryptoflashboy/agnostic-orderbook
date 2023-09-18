@@ -30,12 +30,13 @@ impl MarketState {
     /// Expected size in bytes of MarketState
     pub const LEN: usize = size_of::<Self>();
     #[allow(missing_docs)]
-    pub fn from_buffer(
+    pub fn initialize(
         account_data: &mut [u8],
         expected_tag: AccountTag,
     ) -> Result<&mut Self, ProgramError> {
         let tag = bytemuck::from_bytes_mut::<u64>(&mut account_data[0..8]);
         if tag != &(expected_tag as u64) {
+            msg!("Invalid account tag for market!");
             return Err(ProgramError::InvalidAccountData);
         };
         *tag = AccountTag::Market as u64;
@@ -43,6 +44,22 @@ impl MarketState {
         let (_, data) = account_data.split_at_mut(8);
 
         Ok(bytemuck::from_bytes_mut(data))
+    }
+
+    #[allow(missing_docs)]
+    pub fn from_buffer(
+        account_data: &[u8],
+        expected_tag: AccountTag,
+    ) -> Result<&Self, ProgramError> {
+        let tag = bytemuck::from_bytes::<u64>(&account_data[0..8]);
+        if tag != &(expected_tag as u64) {
+            msg!("Invalid account tag for market!");
+            return Err(ProgramError::InvalidAccountData);
+        };
+
+        let (_, data) = account_data.split_at(8);
+
+        Ok(bytemuck::from_bytes(data))
     }
 
     #[allow(missing_docs)]

@@ -150,6 +150,7 @@ impl<'queue, C: Pod> EventQueue<'queue, C> {
         let account_tag: &mut u64 = bytemuck::from_bytes_mut(&mut buf[0..8]);
 
         if *account_tag != expected_tag as u64 {
+            msg!("Invalid account tag for event queue!");
             return Err(ProgramError::InvalidAccountData);
         }
         *account_tag = AccountTag::EventQueue as u64;

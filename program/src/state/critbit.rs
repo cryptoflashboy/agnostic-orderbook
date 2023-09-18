@@ -3,7 +3,7 @@ use crate::error::AoError;
 use crate::state::AccountTag;
 use borsh::{BorshDeserialize, BorshSerialize};
 use bytemuck::{Pod, Zeroable};
-use solana_program::program_error::ProgramError;
+use solana_program::{msg, program_error::ProgramError};
 // A Slab contains the data for a slab header and two type-split arrays of inner nodes and leaves arranger in a critbit tree
 // whose leaves contain data referencing an order of the orderbook.
 
@@ -129,6 +129,7 @@ impl<'a, C: Pod> Slab<'a, C> {
         let capacity = (buf.len() - SlabHeader::LEN - 8 - leaf_size) / (leaf_size + InnerNode::LEN);
 
         if buf[0] != expected_tag as u8 {
+            msg!("Invalid account tag for slab!");
             return Err(ProgramError::InvalidAccountData);
         }
         let (_, rem) = buf.split_at_mut(8);
@@ -562,7 +563,7 @@ impl<'a, C> Slab<'a, C> {
                     }
                 }
                 Node::Inner => {
-                    let n = self.inner_nodes[(!node_handle as usize)];
+                    let n = self.inner_nodes[!node_handle as usize];
                     let common_prefix_len = (search_key ^ n.key).leading_zeros();
                     if common_prefix_len < n.prefix_len as u32 {
                         return None;
@@ -698,7 +699,7 @@ mod tests {
                 let leaf = LeafNode {
                     key,
                     base_quantity: qty,
-                    max_ts: u64::MAX
+                    max_ts: u64::MAX,
                 };
 
                 println!("key : {:x}", key);
@@ -810,7 +811,7 @@ mod tests {
                         let leaf = LeafNode {
                             key,
                             base_quantity: qty,
-                            max_ts: u64::MAX
+                            max_ts: u64::MAX,
                         };
                         let (leaf_h, old_leaf) = slab.insert_leaf(&leaf).unwrap();
                         let old_owner = *slab.get_callback_info(leaf_h);
