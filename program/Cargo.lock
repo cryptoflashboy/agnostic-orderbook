@@ -56,7 +56,7 @@ dependencies = [
 
 [[package]]
 name = "agnostic-orderbook"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "arrayref",
  "bonfida-utils",
@@ -514,7 +514,6 @@ checksum = "8d696c370c750c948ada61c69a0ee2cbbb9c50b1019ddb86d9317157a99c2cae"
 [[package]]
 name = "bonfida-macros"
 version = "0.3.0"
-source = "git+https://github.com/chugach-foundation/bonfida-utils.git#d3b0408870a7767f34317b47d272010c156335e5"
 dependencies = [
  "proc-macro2 1.0.66",
  "quote 1.0.32",
@@ -524,8 +523,7 @@ dependencies = [
 
 [[package]]
 name = "bonfida-utils"
-version = "0.4.2"
-source = "git+https://github.com/chugach-foundation/bonfida-utils.git#d3b0408870a7767f34317b47d272010c156335e5"
+version = "0.5.0"
 dependencies = [
  "bonfida-macros",
  "borsh 0.10.3",
@@ -2683,12 +2681,13 @@ dependencies = [
 
 [[package]]
 name = "pyth-sdk"
-version = "0.4.2"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f262b88557d8f152a247e1be786a8359d63112fac0a6e49fa41082a8ef789e8d"
+checksum = "1e7aeef4d5f0a9c98ff5af2ddd84a8b89919c512188305b497a9eb9afa97a949"
 dependencies = [
- "borsh 0.9.3",
- "borsh-derive 0.9.3",
+ "borsh 0.10.3",
+ "borsh-derive 0.10.3",
+ "getrandom 0.2.10",
  "hex",
  "schemars",
  "serde",
@@ -2696,12 +2695,12 @@ dependencies = [
 
 [[package]]
 name = "pyth-sdk-solana"
-version = "0.4.2"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2aed1a0b714f91cb104cc025eb806782e30aa63c23259724e79efd609294a2c9"
+checksum = "afa571ea6ea51102b8fc03303d0e6fea4f788f77bb4e0d65ae2d3c5e384e3187"
 dependencies = [
- "borsh 0.9.3",
- "borsh-derive 0.9.3",
+ "borsh 0.10.3",
+ "borsh-derive 0.10.3",
  "bytemuck",
  "num-derive",
  "num-traits",
