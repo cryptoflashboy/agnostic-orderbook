@@ -56,11 +56,7 @@ dependencies = [
 
 [[package]]
 name = "agnostic-orderbook"
-<<<<<<< HEAD
 version = "2.0.0"
-=======
-version = "1.0.2"
->>>>>>> performance_improvements
 dependencies = [
  "arrayref",
  "bonfida-utils",
@@ -519,6 +515,7 @@ checksum = "8d696c370c750c948ada61c69a0ee2cbbb9c50b1019ddb86d9317157a99c2cae"
 [[package]]
 name = "bonfida-macros"
 version = "0.3.0"
+source = "git+https://github.com/chugach-foundation/bonfida-utils.git?rev=15173ee#15173eea833e4bd1be96f03c4d4f82c2c8e8457c"
 dependencies = [
  "proc-macro2 1.0.66",
  "quote 1.0.32",
@@ -529,6 +526,7 @@ dependencies = [
 [[package]]
 name = "bonfida-utils"
 version = "0.5.0"
+source = "git+https://github.com/chugach-foundation/bonfida-utils.git?rev=15173ee#15173eea833e4bd1be96f03c4d4f82c2c8e8457c"
 dependencies = [
  "bonfida-macros",
  "borsh 0.10.3",
